@@ -1,6 +1,6 @@
 # Expense Tracker - Project Akhir PW
 
-**Live Demo:** https://expense-tracker-rayasesan.vercel.app/ 
+**Live Demo:** https://expense-tracker-rayasesan.vercel.app/ <br> 
 **GitHub:** https://github.com/rayasesan/expense-tracker
 
 ## Fitur Utama
