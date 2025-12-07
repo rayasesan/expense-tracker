@@ -1,4 +1,4 @@
-# Expense Tracker - Project Akhir Pemrograman Web - Raya Sesan - 51423249
+# Expense Tracker - Project Akhir Pemrograman Web <br> Nama: Raya Sesan <br> NPM: 51423249
 
 **Live Demo:** https://expense-tracker-rayasesan.vercel.app/ <br> 
 **GitHub:** https://github.com/rayasesan/expense-tracker
