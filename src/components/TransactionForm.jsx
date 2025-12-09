@@ -2,24 +2,37 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 
 function TransactionForm({ transaction, onSave, onCancel }) {
-  const [loading, setLoading] = useState(false);
-  const [categories, setCategories] = useState([]);
   const [formData, setFormData] = useState({
+    description: '',
     amount: '',
     type: 'expense',
     category_id: '',
-    description: '',
     date: new Date().toISOString().split('T')[0]
   });
+  const [categories, setCategories] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     if (transaction) {
       setFormData({
-        amount: transaction.amount,
-        type: transaction.type,
-        category_id: transaction.category_id,
-        description: transaction.description,
-        date: transaction.date
+        description: transaction.description || '',
+        amount: transaction.amount || '',
+        type: transaction.type || 'expense',
+        category_id: transaction.category_id || '',
+        date: transaction.date ? new Date(transaction.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]
       });
     }
     fetchCategories();
@@ -27,29 +40,108 @@ function TransactionForm({ transaction, onSave, onCancel }) {
 
   const fetchCategories = async () => {
     try {
-      const { data, error } = await supabase
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data } = await supabase
         .from('categories')
         .select('*')
+        .eq('user_id', user.id)
         .order('name');
       
-      if (error) throw error;
       setCategories(data || []);
+      
+      // Jika tidak ada transaction (add new) dan ada categories,
+      // set default category otomatis
+      if (!transaction && data && data.length > 0) {
+        const defaultExpense = data.find(c => c.type === 'expense');
+        const defaultIncome = data.find(c => c.type === 'income');
+        
+        if (formData.type === 'expense' && defaultExpense) {
+          setFormData(prev => ({ ...prev, category_id: defaultExpense.id }));
+        } else if (formData.type === 'income' && defaultIncome) {
+          setFormData(prev => ({ ...prev, category_id: defaultIncome.id }));
+        } else if (data[0]) {
+          // Fallback ke category pertama
+          setFormData(prev => ({ 
+            ...prev, 
+            category_id: data[0].id,
+            type: data[0].type 
+          }));
+        }
+      }
     } catch (error) {
       console.error('Error fetching categories:', error);
-      alert('Failed to load categories');
     }
   };
 
-  const handleChange = (e) => {
+  const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
+    setError('');
+    
+    // Jika type berubah, reset category_id dan pilih yang sesuai
+    if (name === 'type') {
+      const filtered = categories.filter(cat => cat.type === value);
+      if (filtered.length > 0) {
+        setFormData(prev => ({ 
+          ...prev, 
+          type: value,
+          category_id: filtered[0].id 
+        }));
+      } else {
+        setFormData(prev => ({ 
+          ...prev, 
+          type: value,
+          category_id: '' 
+        }));
+      }
+    }
+  };
+
+  const validateForm = () => {
+    if (!formData.description.trim()) {
+      setError('Description is required');
+      return false;
+    }
+    
+    if (!formData.amount || parseFloat(formData.amount) <= 0) {
+      setError('Amount must be greater than 0');
+      return false;
+    }
+    
+    if (!formData.category_id) {
+      setError('Please select a category');
+      return false;
+    }
+    
+    // Validasi UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(formData.category_id)) {
+      setError('Invalid category selected');
+      return false;
+    }
+    
+    // Validasi category ada di list categories
+    const selectedCategory = categories.find(c => c.id === formData.category_id);
+    if (!selectedCategory) {
+      setError('Selected category not found');
+      return false;
+    }
+    
+    // Validasi type category sesuai
+    if (selectedCategory.type !== formData.type) {
+      setError(`Category "${selectedCategory.name}" is for ${selectedCategory.type}, not ${formData.type}`);
+      return false;
+    }
+    
+    return true;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError('');
     
-    if (!formData.amount || parseFloat(formData.amount) <= 0) {
-      alert('Please enter a valid amount');
+    // Validasi
+    if (!validateForm()) {
       return;
     }
     
@@ -57,295 +149,431 @@ function TransactionForm({ transaction, onSave, onCancel }) {
 
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('User not authenticated');
       
       const transactionData = {
         user_id: user.id,
+        description: formData.description.trim(),
         amount: parseFloat(formData.amount),
         type: formData.type,
-        category_id: formData.category_id || null,
-        description: formData.description,
+        category_id: formData.category_id, // TIDAK BOLEH NULL
         date: formData.date
       };
 
-      let error;
-      if (transaction?.id) {
-        const result = await supabase
+      if (transaction) {
+        // Update
+        const { error } = await supabase
           .from('transactions')
           .update(transactionData)
           .eq('id', transaction.id);
-        error = result.error;
+        
+        if (error) throw error;
       } else {
-        const result = await supabase
+        // Create
+        const { error } = await supabase
           .from('transactions')
           .insert([transactionData]);
-        error = result.error;
+        
+        if (error) throw error;
       }
 
-      if (error) throw error;
-      alert(transaction ? 'Transaction updated!' : 'Transaction added!');
       onSave();
     } catch (error) {
       console.error('Error saving transaction:', error);
-      alert('Error: ' + error.message);
+      setError('Error saving transaction: ' + error.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const incomeCategories = categories.filter(c => c.type === 'income');
-  const expenseCategories = categories.filter(c => c.type === 'expense');
-  const currentCategories = formData.type === 'income' ? incomeCategories : expenseCategories;
+  const filteredCategories = categories.filter(cat => cat.type === formData.type);
 
   return (
-    <div style={styles.container}>
-      <h3 style={styles.title}>{transaction ? 'Edit Transaction' : 'Add New Transaction'}</h3>
-      
-      <form onSubmit={handleSubmit}>
-        {/* Transaction Type */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Transaction Type *</label>
-          <div style={styles.radioGroup}>
-            <label style={styles.radioLabel}>
-              <input
-                type="radio"
-                name="type"
-                value="income"
-                checked={formData.type === 'income'}
-                onChange={handleChange}
-                style={styles.radioInput}
-              />
-              <span style={{...styles.radioText, color: '#10B981'}}>
-                Income
-              </span>
-            </label>
-            <label style={styles.radioLabel}>
-              <input
-                type="radio"
-                name="type"
-                value="expense"
-                checked={formData.type === 'expense'}
-                onChange={handleChange}
-                style={styles.radioInput}
-              />
-              <span style={{...styles.radioText, color: '#EF4444'}}>
-                Expense
-              </span>
-            </label>
-          </div>
+    <form onSubmit={handleSubmit} style={styles.form}>
+      {error && (
+        <div style={styles.errorAlert}>
+          <span style={styles.errorText}>{error}</span>
         </div>
+      )}
 
-        {/* Amount */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Amount (IDR) *</label>
-          <div style={styles.amountContainer}>
-            <span style={styles.currency}>Rp</span>
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Description *</label>
+        <input
+          type="text"
+          name="description"
+          value={formData.description}
+          onChange={handleInputChange}
+          placeholder="Enter transaction description"
+          style={styles.input}
+          required
+          maxLength={100}
+        />
+        <div style={styles.charCount}>
+          {formData.description.length}/100
+        </div>
+      </div>
+
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Amount (IDR) *</label>
+        <input
+          type="number"
+          name="amount"
+          value={formData.amount}
+          onChange={handleInputChange}
+          placeholder="0"
+          style={styles.input}
+          required
+          min="100"
+          step="100"
+        />
+        <div style={styles.amountHint}>
+          Minimum: Rp 100
+        </div>
+      </div>
+
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Type *</label>
+        <div style={styles.radioGroup}>
+          <label style={styles.radioLabel}>
             <input
-              type="number"
-              name="amount"
-              value={formData.amount}
-              onChange={handleChange}
-              required
-              min="0"
-              step="1"
-              style={styles.amountInput}
-              placeholder="0"
+              type="radio"
+              name="type"
+              value="expense"
+              checked={formData.type === 'expense'}
+              onChange={handleInputChange}
+              style={styles.radioInput}
             />
+            <span style={{ color: '#EF4444', marginLeft: '6px', fontWeight: '600' }}>
+              {isMobile ? 'Expense' : 'Expense'}
+            </span>
+          </label>
+          <label style={styles.radioLabel}>
+            <input
+              type="radio"
+              name="type"
+              value="income"
+              checked={formData.type === 'income'}
+              onChange={handleInputChange}
+              style={styles.radioInput}
+            />
+            <span style={{ color: '#10B981', marginLeft: '6px', fontWeight: '600' }}>
+              {isMobile ? 'Income' : 'Income'}
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Category *</label>
+        {filteredCategories.length === 0 ? (
+          <div style={styles.noCategoriesWarning}>
+            <p style={styles.warningText}>
+              No {formData.type} categories available.
+            </p>
+            <p style={styles.warningSubtext}>
+              Please add {formData.type} categories in the Categories page first.
+            </p>
           </div>
-        </div>
-
-        {/* Category */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Category</label>
-          <select
-            name="category_id"
-            value={formData.category_id}
-            onChange={handleChange}
-            style={styles.select}
-          >
-            <option value="">-- Select Category --</option>
-            {currentCategories.map(cat => (
-              <option key={cat.id} value={cat.id} style={{ color: cat.color }}>
-                {cat.name}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Description */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Description</label>
-          <input
-            type="text"
-            name="description"
-            value={formData.description}
-            onChange={handleChange}
-            style={styles.input}
-            placeholder="What is this transaction for?"
-            maxLength="100"
-          />
-        </div>
-
-        {/* Date */}
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Date *</label>
-          <input
-            type="date"
-            name="date"
-            value={formData.date}
-            onChange={handleChange}
-            style={styles.input}
-            required
-            max={new Date().toISOString().split('T')[0]}
-          />
-        </div>
-
-        {/* Buttons */}
-        <div style={styles.buttonGroup}>
-          <button
-            type="button"
-            onClick={onCancel}
-            style={styles.cancelButton}
-            disabled={loading}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            style={styles.submitButton}
-            disabled={loading}
-          >
-            {loading ? (
-              <span>Saving...</span>
-            ) : transaction ? (
-              'Update Transaction'
-            ) : (
-              'Add Transaction'
+        ) : (
+          <>
+            <select
+              name="category_id"
+              value={formData.category_id}
+              onChange={handleInputChange}
+              style={{
+                ...styles.select,
+                borderColor: !formData.category_id ? '#EF4444' : '#e2e8f0'
+              }}
+              required
+            >
+              <option value="">-- Select a category --</option>
+              {filteredCategories.map(category => (
+                <option key={category.id} value={category.id}>
+                  {category.name}
+                </option>
+              ))}
+            </select>
+            {formData.category_id && (
+              <div style={styles.selectedCategoryInfo}>
+                <div style={{
+                  ...styles.categoryColor,
+                  backgroundColor: filteredCategories.find(c => c.id === formData.category_id)?.color || '#ccc'
+                }} />
+                <span style={styles.categoryName}>
+                  {filteredCategories.find(c => c.id === formData.category_id)?.name}
+                </span>
+              </div>
             )}
-          </button>
-        </div>
-      </form>
-    </div>
+          </>
+        )}
+      </div>
+
+      <div style={styles.formGroup}>
+        <label style={styles.label}>Date *</label>
+        <input
+          type="date"
+          name="date"
+          value={formData.date}
+          onChange={handleInputChange}
+          style={styles.input}
+          required
+          max={new Date().toISOString().split('T')[0]}
+        />
+      </div>
+
+      <div style={styles.formActions}>
+        <button
+          type="button"
+          onClick={onCancel}
+          style={styles.cancelButton}
+          disabled={loading}
+          className="cancelButton"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          style={styles.submitButton}
+          disabled={loading || filteredCategories.length === 0}
+          className="submitButton"
+        >
+          {loading ? (
+            <span style={styles.loadingText}>
+              <span style={styles.spinner}></span>
+              {isMobile ? 'Saving...' : 'Saving...'}
+            </span>
+          ) : transaction ? 'Update' : 'Save'}
+        </button>
+      </div>
+      
+      <div style={styles.requiredNote}>
+        * Required fields
+      </div>
+    </form>
   );
 }
 
 const styles = {
-  container: {
-    backgroundColor: 'white',
-    padding: '30px',
-    borderRadius: '12px',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
-    maxWidth: '500px',
-    margin: '0 auto',
-    fontFamily: 'Arial, sans-serif'
+  form: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '20px',
+    width: '100%',
   },
-  title: {
-    margin: '0 0 25px 0',
-    color: '#1e293b',
-    fontSize: '24px',
-    textAlign: 'center'
+  errorAlert: {
+    backgroundColor: '#FEE2E2',
+    border: '1px solid #FCA5A5',
+    color: '#DC2626',
+    padding: '12px 16px',
+    borderRadius: '8px',
+    fontSize: '14px',
+    fontWeight: '500',
+  },
+  errorText: {
+    fontSize: '14px',
   },
   formGroup: {
-    marginBottom: '20px'
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
   },
   label: {
-    display: 'block',
-    marginBottom: '8px',
+    fontSize: '14px',
     fontWeight: '600',
     color: '#475569',
-    fontSize: '14px'
+  },
+  input: {
+    padding: '12px',
+    border: '1px solid #e2e8f0',
+    borderRadius: '8px',
+    fontSize: '16px',
+    width: '100%',
+    boxSizing: 'border-box',
+    backgroundColor: '#f8fafc',
+  },
+  charCount: {
+    fontSize: '12px',
+    color: '#64748b',
+    textAlign: 'right',
+  },
+  amountHint: {
+    fontSize: '12px',
+    color: '#64748b',
+    fontStyle: 'italic',
   },
   radioGroup: {
     display: 'flex',
     gap: '20px',
-    marginTop: '5px'
+    marginTop: '4px',
   },
   radioLabel: {
     display: 'flex',
     alignItems: 'center',
     cursor: 'pointer',
-    padding: '8px 12px',
-    borderRadius: '6px',
-    border: '1px solid #e2e8f0',
-    flex: 1,
-    justifyContent: 'center'
+    fontSize: '14px',
+    fontWeight: '500',
   },
   radioInput: {
-    marginRight: '8px'
-  },
-  radioText: {
-    fontWeight: '500',
-    fontSize: '15px'
-  },
-  amountContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    border: '1px solid #e2e8f0',
-    borderRadius: '6px',
-    overflow: 'hidden'
-  },
-  currency: {
-    backgroundColor: '#f8fafc',
-    padding: '12px 15px',
-    borderRight: '1px solid #e2e8f0',
-    fontWeight: '500',
-    color: '#475569'
-  },
-  amountInput: {
-    flex: 1,
-    padding: '12px',
-    border: 'none',
-    fontSize: '16px',
-    outline: 'none'
-  },
-  input: {
-    width: '100%',
-    padding: '12px',
-    border: '1px solid #e2e8f0',
-    borderRadius: '6px',
-    fontSize: '16px',
-    outline: 'none',
-    transition: 'border-color 0.3s'
+    margin: 0,
   },
   select: {
-    width: '100%',
     padding: '12px',
     border: '1px solid #e2e8f0',
-    borderRadius: '6px',
+    borderRadius: '8px',
     fontSize: '16px',
-    backgroundColor: 'white',
-    outline: 'none',
-    cursor: 'pointer'
+    width: '100%',
+    boxSizing: 'border-box',
+    backgroundColor: '#f8fafc',
+    appearance: 'none',
+    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E")`,
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: 'right 12px center',
+    backgroundSize: '16px',
   },
-  buttonGroup: {
+  noCategoriesWarning: {
+    backgroundColor: '#FEF3C7',
+    border: '1px solid #FBBF24',
+    borderRadius: '8px',
+    padding: '12px',
+    textAlign: 'center',
+  },
+  warningText: {
+    color: '#92400E',
+    fontSize: '14px',
+    fontWeight: '600',
+    margin: 0,
+    marginBottom: '4px',
+  },
+  warningSubtext: {
+    color: '#92400E',
+    fontSize: '12px',
+    margin: 0,
+    opacity: 0.8,
+  },
+  selectedCategoryInfo: {
     display: 'flex',
-    gap: '15px',
-    marginTop: '30px'
+    alignItems: 'center',
+    gap: '8px',
+    marginTop: '8px',
+    padding: '8px',
+    backgroundColor: '#f1f5f9',
+    borderRadius: '6px',
+  },
+  categoryColor: {
+    width: '12px',
+    height: '12px',
+    borderRadius: '50%',
+  },
+  categoryName: {
+    fontSize: '13px',
+    color: '#475569',
+    fontWeight: '500',
+  },
+  formActions: {
+    display: 'flex',
+    gap: '12px',
+    marginTop: '10px',
   },
   cancelButton: {
     flex: 1,
     padding: '14px',
-    backgroundColor: 'transparent',
-    color: '#64748b',
+    backgroundColor: '#f1f5f9',
+    color: '#475569',
     border: '1px solid #e2e8f0',
-    borderRadius: '6px',
+    borderRadius: '8px',
     fontSize: '16px',
-    fontWeight: '500',
+    fontWeight: '600',
     cursor: 'pointer',
-    transition: 'all 0.2s'
+    transition: 'all 0.3s ease',
   },
   submitButton: {
-    flex: 2,
+    flex: 1,
     padding: '14px',
     backgroundColor: '#3b82f6',
     color: 'white',
     border: 'none',
-    borderRadius: '6px',
+    borderRadius: '8px',
     fontSize: '16px',
     fontWeight: '600',
     cursor: 'pointer',
-    transition: 'background-color 0.2s'
-  }
+    transition: 'all 0.3s ease',
+    position: 'relative',
+  },
+  loadingText: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+  },
+  spinner: {
+    width: '16px',
+    height: '16px',
+    border: '2px solid rgba(255,255,255,0.3)',
+    borderTop: '2px solid white',
+    borderRadius: '50%',
+    animation: 'spin 1s linear infinite',
+  },
+  requiredNote: {
+    fontSize: '12px',
+    color: '#64748b',
+    textAlign: 'center',
+    marginTop: '10px',
+    fontStyle: 'italic',
+  },
 };
+
+// Add CSS animations
+if (typeof document !== 'undefined') {
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .cancelButton:hover:not(:disabled) {
+      background-color: #e2e8f0;
+    }
+    
+    .submitButton:hover:not(:disabled) {
+      background-color: #2563eb;
+    }
+    
+    .submitButton:disabled {
+      background-color: #94a3b8;
+      cursor: not-allowed;
+    }
+    
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    input:focus, select:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+    }
+    
+    select:invalid {
+      border-color: #EF4444;
+    }
+    
+    @media (max-width: 480px) {
+      .radioGroup {
+        flex-direction: column;
+        gap: 8px;
+      }
+      
+      .formActions {
+        flex-direction: column;
+      }
+      
+      .cancelButton, .submitButton {
+        width: 100%;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+}
 
 export default TransactionForm;
